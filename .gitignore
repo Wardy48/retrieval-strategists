@@ -1,3 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+# Ignore raw downloaded datasets and temporary folders
+dataset_downloaded.zip
+dataset_extracted/
+
+# Ignore the final split dataset directory
+dataset_final/
