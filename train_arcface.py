@@ -1,6 +1,6 @@
 import os
 import math
-import json
+from collections import defaultdict
 from PIL import Image
 
 import torch
@@ -21,15 +21,26 @@ device = _get_device()
 if __name__ == "__main__":
     print(f"Using device: {device}")
 
-DATA_ROOT = os.path.join(
-    os.path.dirname(__file__),
-    "retrieval_strategists_full_dataset_in_partitions_v1"
-)
-TRAIN_QUERY   = os.path.join(DATA_ROOT, "training",   "query")
-TRAIN_GALLERY = os.path.join(DATA_ROOT, "training",   "gallery")
-VAL_QUERY     = os.path.join(DATA_ROOT, "validation", "query")
-VAL_GALLERY   = os.path.join(DATA_ROOT, "validation", "gallery")
-SAVE_PATH     = os.path.join(os.path.dirname(__file__), "best_model.pth")
+# ── Dataset version ───────────────────────────────────────────────────────────
+# 1 = retrieval_strategists_full_dataset_in_partitions_v1/  (flat query/gallery)
+# 2 = dataset_final/  (celebrities in per-identity subdirs)
+DATASET_VERSION = 2
+
+_BASE = os.path.dirname(__file__)
+
+if DATASET_VERSION == 1:
+    DATA_ROOT     = os.path.join(_BASE, "retrieval_strategists_full_dataset_in_partitions_v1")
+    TRAIN_FOLDERS = [os.path.join(DATA_ROOT, "training",   "query"),
+                     os.path.join(DATA_ROOT, "training",   "gallery")]
+    VAL_CELEB_DIR = os.path.join(DATA_ROOT, "validation", "query")
+    VAL_MODE      = "flat"   # identities from filenames
+else:
+    DATA_ROOT     = os.path.join(_BASE, "dataset_final")
+    TRAIN_FOLDERS = [os.path.join(DATA_ROOT, "train", "celebrities")]
+    VAL_CELEB_DIR = os.path.join(DATA_ROOT, "val", "celebrities")
+    VAL_MODE      = "subdir"  # identities from directory names
+
+SAVE_PATH = os.path.join(_BASE, "best_model.pth")
 
 EMBEDDING_DIM = 512
 BATCH_SIZE    = 64
@@ -98,20 +109,34 @@ class EmbeddingModel(nn.Module):
 
 class CelebrityDataset(Dataset):
     """
-    Loads images from one or more flat folders.
-    Identity labels are parsed from filenames: {celebrity_id}_{image_num}.jpg
+    Loads images for ArcFace training.
+
+    v1 mode  — flat folders, identity parsed from filename: {id}_{num}.jpg
+    v2 mode  — each folder contains per-identity subdirs: celebrities/{id}/*.jpg
     """
-    def __init__(self, folders: list, transform=None):
+    def __init__(self, folders: list, transform=None, mode: str = "subdir"):
         self.transform = transform
         raw = []
         all_identities: set = set()
 
         for folder in folders:
-            for fname in sorted(os.listdir(folder)):
-                if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-                    identity = fname.rsplit('_', 1)[0]  # e.g. "10001"
-                    all_identities.add(identity)
-                    raw.append((os.path.join(folder, fname), identity))
+            if mode == "subdir":
+                # Walk one level of subdirectories; dir name = identity
+                for identity_dir in sorted(os.listdir(folder)):
+                    id_path = os.path.join(folder, identity_dir)
+                    if not os.path.isdir(id_path):
+                        continue
+                    for fname in sorted(os.listdir(id_path)):
+                        if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                            all_identities.add(identity_dir)
+                            raw.append((os.path.join(id_path, fname), identity_dir))
+            else:
+                # Flat folder — identity from filename prefix
+                for fname in sorted(os.listdir(folder)):
+                    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                        identity = fname.rsplit('_', 1)[0]
+                        all_identities.add(identity)
+                        raw.append((os.path.join(folder, fname), identity))
 
         self.identity_to_idx = {
             ident: idx for idx, ident in enumerate(sorted(all_identities))
@@ -156,13 +181,19 @@ eval_transform = transforms.Compose([
 @torch.no_grad()
 def extract_features(model: nn.Module, folder: str,
                      transform, batch_size: int = 128):
-    """Returns (N, D) normalised feature tensor and sorted filenames."""
+    """
+    Returns (N, D) normalised feature tensor and full file paths.
+    Walks subdirectories so it works with both flat and per-identity layouts.
+    """
     model.eval()
-    filenames = sorted(
-        f for f in os.listdir(folder)
-        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))
-    )
-    images = [Image.open(os.path.join(folder, f)).convert("RGB") for f in filenames]
+    file_paths = []
+    for root, _, files in os.walk(folder):
+        for f in sorted(files):
+            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                file_paths.append(os.path.join(root, f))
+    file_paths.sort()
+
+    images = [Image.open(p).convert("RGB") for p in file_paths]
 
     all_feats = []
     for i in range(0, len(images), batch_size):
@@ -171,31 +202,48 @@ def extract_features(model: nn.Module, folder: str,
         feats = F.normalize(feats, p=2, dim=1)
         all_feats.append(feats.cpu())
 
-    return torch.cat(all_feats, dim=0), filenames
+    return torch.cat(all_feats, dim=0), file_paths
 
 
-def evaluate(model: nn.Module, query_folder: str, gallery_folder: str,
-             transform, top_k: int = 10) -> float:
+def evaluate(model: nn.Module, val_celeb_folder: str,
+             transform, top_k: int = 10, mode: str = "subdir") -> float:
     """
-    Computes Top-1 / Top-5 / Top-10 retrieval accuracy and the
-    competition score (out of 1000).
+    Computes Top-1 / Top-5 / Top-10 retrieval accuracy.
+
+    Validation strategy (v2): for each identity in val/celebrities/,
+    use the first image as the query and retrieve among all other images.
+    Identity comes from the parent directory name (subdir mode) or filename (flat mode).
     """
-    query_feats,   query_files   = extract_features(model, query_folder,   transform)
-    gallery_feats, gallery_files = extract_features(model, gallery_folder, transform)
+    all_feats, all_paths = extract_features(model, val_celeb_folder, transform)
 
-    query_ids   = [f.rsplit('_', 1)[0] for f in query_files]
-    gallery_ids = [f.rsplit('_', 1)[0] for f in gallery_files]
+    if mode == "subdir":
+        all_ids = [os.path.basename(os.path.dirname(p)) for p in all_paths]
+    else:
+        all_ids = [os.path.basename(p).rsplit('_', 1)[0] for p in all_paths]
 
-    sim = torch.matmul(query_feats, gallery_feats.T)
+    # One query per identity (first image), full set as gallery
+    id_to_indices = defaultdict(list)
+    for i, id_ in enumerate(all_ids):
+        id_to_indices[id_].append(i)
+
+    query_indices = [indices[0] for indices in id_to_indices.values()]
+    query_feats   = all_feats[query_indices]
+    query_ids     = [all_ids[i] for i in query_indices]
+
+    sim = torch.matmul(query_feats, all_feats.T)
+    # Mask out the exact query image from its own results
+    for qi, gi in enumerate(query_indices):
+        sim[qi, gi] = -2.0
+
     _, top_k_idx = torch.topk(sim, k=top_k, dim=1)
 
     top1 = top5 = top10 = 0
-    n = len(query_files)
+    n = len(query_indices)
     for i, q_id in enumerate(query_ids):
-        retrieved = [gallery_ids[j] for j in top_k_idx[i].tolist()]
-        if retrieved[0] == q_id:        top1  += 1
-        if q_id in retrieved[:5]:       top5  += 1
-        if q_id in retrieved[:10]:      top10 += 1
+        retrieved = [all_ids[j] for j in top_k_idx[i].tolist()]
+        if retrieved[0] == q_id:     top1  += 1
+        if q_id in retrieved[:5]:    top5  += 1
+        if q_id in retrieved[:10]:   top10 += 1
 
     score = (top1 / n) * 600 + (top5 / n) * 300 + (top10 / n) * 100
     print(f"    Top-1: {top1/n:.3f} | Top-5: {top5/n:.3f} | "
@@ -204,10 +252,15 @@ def evaluate(model: nn.Module, query_folder: str, gallery_folder: str,
 
 
 def main():
+    print(f"\n── Dataset version: v{DATASET_VERSION} ──────────────────────────────")
+    print(f"   Train folders: {TRAIN_FOLDERS}")
+    print(f"   Val folder:    {VAL_CELEB_DIR}")
+
     print("\n── Building dataset ─────────────────────────────────────")
     train_dataset = CelebrityDataset(
-        folders=[TRAIN_QUERY, TRAIN_GALLERY],
+        folders=TRAIN_FOLDERS,
         transform=train_transform,
+        mode=VAL_MODE,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -269,7 +322,7 @@ def main():
         print(f"\nEpoch [{epoch+1:02d}/{EPOCHS}] loss={avg_loss:.4f}  lr={lr_now:.2e}")
 
         # ── validate ──
-        score = evaluate(model, VAL_QUERY, VAL_GALLERY, eval_transform)
+        score = evaluate(model, VAL_CELEB_DIR, eval_transform, mode=VAL_MODE)
 
         # ── checkpoint ──
         if score > best_score:
@@ -280,6 +333,7 @@ def main():
                     "model_state":    model.state_dict(),
                     "embedding_dim":  EMBEDDING_DIM,
                     "val_score":      score,
+                    "dataset_version": DATASET_VERSION,
                 },
                 SAVE_PATH,
             )
