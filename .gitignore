@@ -1,0 +1,22 @@
+# Submission script (contains server URL / group name)
+submit_results.py
+
+# Large files
+best_model.pth
+retrieval_strategists_full_dataset_in_partitions_v1/
+_2026_Intro2ML_Challenge_.pdf
+
+# Generated outputs
+retrieval_results.png
+score_breakdown.png
+training_log.txt
+
+# Python
+__pycache__/
+*.pyc
+.DS_Store
+download_RDD_split.py
+reorganize_dataset.py
+dataset_extracted/
+dataset_final/
+dataset_downloaded.zip
