@@ -38,7 +38,8 @@ def batching(images, batch_size=32):
     return torch.cat(features, dim=0)
         
 
-data_folder = "/Users/prota/code/competition/test_data"
+# Target the new flat validation split directory
+data_folder = "/home/disi/retrivial_strategist/dataset_final_flat/val"
 query_folder = os.path.join(data_folder, "query")
 gallery_folder = os.path.join(data_folder, "gallery")
 
@@ -47,24 +48,34 @@ query_filenames = []
 gallery_images = []
 gallery_filenames = []
 
-for filename in os.listdir(query_folder):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-        img_path = os.path.join(query_folder, filename)
-        query_filenames.append(filename)
-        img = Image.open(img_path)
-        query_images.append(img)
+print(f"[*] Scanning flat split inside: {data_folder}")
 
-for filename in os.listdir(gallery_folder):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-        img_path = os.path.join(gallery_folder, filename)
-        gallery_filenames.append(filename)
-        img = Image.open(img_path)
-        gallery_images.append(img)
+# Load all images strictly from the new 'query' directory
+if os.path.exists(query_folder):
+    for filename in sorted(os.listdir(query_folder)):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+            img_path = os.path.join(query_folder, filename)
+            query_filenames.append(filename)
+            img = Image.open(img_path)
+            query_images.append(img)
+
+# Load all images strictly from the new 'gallery' directory
+if os.path.exists(gallery_folder):
+    for filename in sorted(os.listdir(gallery_folder)):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+            img_path = os.path.join(gallery_folder, filename)
+            gallery_filenames.append(filename)
+            img = Image.open(img_path)
+            gallery_images.append(img)
         
-# Print the number of images in each folder
-print(f"Number of images in query folder: {len(query_images)}")
-print(f"Number of images in gallery folder: {len(gallery_images)}")
+# Print the number of images loaded from each directory
+print(f"[+] Loading complete!")
+print(f"-> Number of images in query set: {len(query_images)}")
+print(f"-> Number of images in gallery set: {len(gallery_images)}")
 
+if len(query_images) == 0 or len(gallery_images) == 0:
+    print(f"[!] ERROR: Query or Gallery sets are empty. Check your {data_folder} folder path.")
+    exit()
 
 ##########
 weights = ResNet50_Weights.IMAGENET1K_V2
@@ -107,6 +118,23 @@ for i, query_filename in enumerate(query_filenames):
 results = {}
 for i, query_filename in enumerate(query_filenames):
     results[query_filename] = top_k_filenames[i]
-    
-# Submit the results
-submit(results=results, groupname="resnet50-imagenet", url="http://localhost:3001/retrieval/")
+
+# Save results locally to disk first
+local_json_path = os.path.join(os.path.dirname(data_folder), "resnet50_results.json")
+print(f"[*] Saving evaluation results locally to '{local_json_path}'...")
+with open(local_json_path, "w") as f:
+    json.dump({"groupname": "resnet50-imagenet", "images": results}, f, indent=4)
+print("[+] Local backup saved successfully.")
+
+# Submit the results with the corrected URL endpoint
+print("[*] Submitting evaluation matrix to local scoring server...")
+try:
+    submit(
+        results=results, 
+        groupname="resnet50-imagenet", 
+        url="http://localhost:3001/retrieval/"
+    )
+except requests.exceptions.ConnectionError:
+    print("\n[!] ERROR: Could not connect to the scoring server.")
+    print(f"[!] Ensure your server is running on port 3001 in another terminal.")
+    print(f"[!] You can manually post your saved backup file later: {local_json_path}")
