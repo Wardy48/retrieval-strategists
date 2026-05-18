@@ -2,6 +2,7 @@ import os
 import math
 from collections import defaultdict
 from PIL import Image
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -305,7 +306,8 @@ def main():
         # ── train ──
         model.train()
         total_loss = 0.0
-        for imgs, labels in train_loader:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1:02d}/{EPOCHS}", leave=False)
+        for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
             embeddings = model(imgs)
             loss = arcface(embeddings, labels)
@@ -316,6 +318,7 @@ def main():
             )
             optimizer.step()
             total_loss += loss.item()
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         avg_loss = total_loss / len(train_loader)
         lr_now   = optimizer.param_groups[1]["lr"]
