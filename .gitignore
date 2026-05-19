@@ -13,3 +13,19 @@ dataset_final_flat/
 reshuffle.py
 # Ignore evaluation results
 evaluate_results.py
+
+# Teammate files — not mine
+baseline_updated.py
+test_model_resnet50.py
+model_evaluator.py
+baseline_insightface.py
+results/
+
+# Large model weights — too big for git
+best_model.pth
+clip/best_clip_model.pth
+
+# Misc
+.DS_Store
+training_log.txt
+insightface_v2.py
