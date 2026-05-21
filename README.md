@@ -1,2 +1,2 @@
 # retrieval-strategists
-Group project by:
+Group project.
