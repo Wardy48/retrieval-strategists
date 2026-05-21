@@ -28,4 +28,21 @@ clip/best_clip_model.pth
 # Misc
 .DS_Store
 training_log.txt
+
+# Not pushing these
+insightface/
 insightface_v2.py
+submit_results.py
+reorganize_dataset.py
+test-model-resnet50.py
+
+# Image datasets — too large for git
+retrieval_strategists_full_dataset_in_partitions_v3/
+retrieval_strategists_full_dataset_in_partitions_v1/
+
+# Generated images
+model_comparison.png
+model_comparison_v2.png
+retrieval_results.png
+score_breakdown.png
+_2026_Intro2ML_Challenge_.pdf
